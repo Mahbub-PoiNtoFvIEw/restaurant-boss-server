@@ -4,12 +4,14 @@ const cors = require("cors");
 const jwt = require('jsonwebtoken');
 require("dotenv").config();
 const port = process.env.PORT || 5000;
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // middleware
 app.use(cors());
 app.use(express.json());
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const { default: Stripe } = require("stripe");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.galzq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -30,6 +32,7 @@ async function run() {
     const userCollection = client.db("restaurantDb").collection("users");
     const reviewCollection = client.db("restaurantDb").collection("reviews");
     const cartCollection = client.db("restaurantDb").collection("carts");
+    const paymentCollection = client.db("restaurantDb").collection("payments");
 
     app.post("/jwt", async (req, res) => {
       const user = req.body;
@@ -46,6 +49,7 @@ async function run() {
         return res.status(401).send({message: 'unauthorized access'});
       }
       const token = req.headers.authorization.split(' ')[1];
+      console.log('sp',token);
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded)=>{
         if(err){
           return res.status(401).send({message: 'unauthorized access'});
@@ -188,6 +192,43 @@ async function run() {
       const result = await cartCollection.deleteOne(query);
       res.send(result);
     });
+
+    // payment intent
+    app.post('/create-payment-intent', async(req, res)=>{
+      const {price} = req.body;
+      const amount = parseInt(price * 100);
+      console.log('inside the payment intent', amount);
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    })
+
+    app.get('/payments/:email', verifyToken, async(req, res)=>{
+      const query = {email: req.params.email};
+      if(req.params.email !== req.decoded.email){
+        return res.status(403).send({message: 'forbidden access'});
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    })
+
+    app.post('/payments', async(req, res)=>{
+      const payment = req.body;
+      const paymentResult = await paymentCollection.insertOne(payment);
+      // delete each item from the cart
+      console.log('payment info', payment);
+      const query = {_id:{
+        $in: payment.cartIds.map(id=> new ObjectId(id))
+      }}
+      console.log('qq',query)
+      const deleteResult = await cartCollection.deleteMany(query);
+      res.send({paymentResult, deleteResult});
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
